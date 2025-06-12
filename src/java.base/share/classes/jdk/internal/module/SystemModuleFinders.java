@@ -34,7 +34,6 @@ import java.lang.module.ModuleReader;
 import java.lang.module.ModuleReference;
 import java.lang.reflect.Constructor;
 import java.net.URI;
-import java.net.URLConnection;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -481,7 +480,7 @@ public final class SystemModuleFinders {
     private static class ModuleContentSpliterator implements Spliterator<String> {
         final String moduleRoot;
         final Deque<ImageReader.Node> stack;
-        Iterator<ImageReader.Node> iterator;
+        Iterator<String> iterator;
 
         ModuleContentSpliterator(String module) throws IOException {
             moduleRoot = "/modules/" + module;
@@ -502,13 +501,10 @@ public final class SystemModuleFinders {
         private String next() throws IOException {
             for (;;) {
                 while (iterator.hasNext()) {
-                    ImageReader.Node node = iterator.next();
-                    String name = node.getName();
+                    String name = iterator.next();
+                    ImageReader.Node node = SystemImage.reader().findNode(name);
                     if (node.isDirectory()) {
-                        // build node
-                        ImageReader.Node dir = SystemImage.reader().findNode(name);
-                        assert dir.isDirectory();
-                        stack.push(dir);
+                        stack.push(node);
                     } else {
                         // strip /modules/$MODULE/ prefix
                         return name.substring(moduleRoot.length() + 1);
@@ -520,7 +516,7 @@ public final class SystemModuleFinders {
                 } else {
                     ImageReader.Node dir = stack.poll();
                     assert dir.isDirectory();
-                    iterator = dir.getChildren().iterator();
+                    iterator = dir.getChildNames().iterator();
                 }
             }
         }

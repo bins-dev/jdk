@@ -25,7 +25,6 @@
 package jdk.internal.jimage;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -35,6 +34,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -42,7 +42,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 /**
  * @implNote This class needs to maintain JDK 8 source compatibility.
@@ -92,57 +94,32 @@ public final class ImageReader implements AutoCloseable {
         }
     }
 
+    // TODO: Called by SystemImage (now completely pointless).
     // directory management interface
     public Directory getRootDirectory() throws IOException {
         ensureOpen();
-        return reader.getRootDirectory();
+        return (Directory) findNode("/");
     }
 
-
+    // TODO: Called by SystemImage and SystemModuleFinders.
     public Node findNode(String name) throws IOException {
         ensureOpen();
         return reader.findNode(name);
     }
 
+    // TODO: Called by SystemImage for JrtFileSystem.
     public byte[] getResource(Node node) throws IOException {
         ensureOpen();
         return reader.getResource(node);
     }
 
-    public byte[] getResource(Resource rs) throws IOException {
-        ensureOpen();
-        return reader.getResource(rs);
-    }
-
-    public ImageHeader getHeader() {
-        requireOpen();
-        return reader.getHeader();
-    }
-
+    // TODO: Called once from SystemModuleReader::release().
     public static void releaseByteBuffer(ByteBuffer buffer) {
         BasicImageReader.releaseByteBuffer(buffer);
     }
 
-    public String getName() {
-        requireOpen();
-        return reader.getName();
-    }
-
-    public ByteOrder getByteOrder() {
-        requireOpen();
-        return reader.getByteOrder();
-    }
-
-    public Path getImagePath() {
-        requireOpen();
-        return reader.getImagePath();
-    }
-
-    public ImageStringsReader getStrings() {
-        requireOpen();
-        return reader.getStrings();
-    }
-
+    // TODO: Avoid leaking ImageLocation into callers (only 3) so we can
+    //  encapsulate better for exploded image etc.
     public ImageLocation findLocation(String mn, String rn) {
         requireOpen();
         return reader.findLocation(mn, rn);
@@ -153,82 +130,69 @@ public final class ImageReader implements AutoCloseable {
         return reader.verifyLocation(mn, rn);
     }
 
-    public ImageLocation findLocation(String name) {
-        requireOpen();
-        return reader.findLocation(name);
-    }
-
-    public String[] getEntryNames() {
-        requireOpen();
-        return reader.getEntryNames();
-    }
-
+    // TODO: Only called once when processing module info.
+    //  Maybe simplify to use findNode("/modules").getChildren() ?
     public String[] getModuleNames() {
         requireOpen();
         int off = "/modules/".length();
         return reader.findNode("/modules")
-                     .getChildren()
-                     .stream()
-                     .map(Node::getNameString)
-                     .map(s -> s.substring(off, s.length()))
-                     .toArray(String[]::new);
+                .getChildNames()
+                .map(s -> s.substring(off))
+                .toArray(String[]::new);
     }
 
-    public long[] getAttributes(int offset) {
-        requireOpen();
-        return reader.getAttributes(offset);
-    }
-
-    public String getString(int offset) {
-        requireOpen();
-        return reader.getString(offset);
-    }
-
-    public byte[] getResource(String name) {
-        requireOpen();
-        return reader.getResource(name);
-    }
-
+    // TODO: Called once by JavaURuntimeURLConnection ...
     public byte[] getResource(ImageLocation loc) {
         requireOpen();
         return reader.getResource(loc);
     }
 
+    // TODO: Called twice in SystemModuleFinders.
     public ByteBuffer getResourceBuffer(ImageLocation loc) {
         requireOpen();
         return reader.getResourceBuffer(loc);
     }
 
-    public InputStream getResourceStream(ImageLocation loc) {
-        requireOpen();
-        return reader.getResourceStream(loc);
-    }
-
     private static final class SharedImageReader extends BasicImageReader {
-        static final int SIZE_OF_OFFSET = Integer.BYTES;
-
-        static final Map<Path, SharedImageReader> OPEN_FILES = new HashMap<>();
+        private static final Map<Path, SharedImageReader> OPEN_FILES = new HashMap<>();
 
         // List of openers for this shared image.
-        final Set<ImageReader> openers;
+        private final Set<ImageReader> openers;
 
         // attributes of the .jimage file. jimage file does not contain
         // attributes for the individual resources (yet). We use attributes
         // of the jimage file itself (creation, modification, access times).
-        // Iniitalized lazily, see {@link #imageFileAttributes()}.
-        BasicFileAttributes imageFileAttributes;
+        // Initialized lazily, see {@link #imageFileAttributes()}.
+        private BasicFileAttributes imageFileAttributes;
 
-        // directory management implementation
-        final HashMap<String, Node> nodes;
-        volatile Directory rootDir;
-
-        Directory packagesDir;
-        Directory modulesDir;
+        // TODO: Add JavaDoc explaining Image vs System paths.
+        // Map from absolute "system path" to cached node instances.
+        // This is guarded by via synchronization of 'this' instance.
+        private final HashMap<String, Node> nodes;
+        // Used to quickly test ImageLocation without needing string comparisons.
+        private final int modulesStringOffset;
+        private final int packagesStringOffset;
 
         private SharedImageReader(Path imagePath, ByteOrder byteOrder) throws IOException {
             super(imagePath, byteOrder);
             this.openers = new HashSet<>();
+            // TODO: Given there are 30,000 nodes in the image, is setting an initial capacity a good idea?
             this.nodes = new HashMap<>();
+            // The *really* should exist under all circumstances, but there's
+            // probably a more robust way of getting it...
+            this.modulesStringOffset = findLocation("/modules/java.base").getModuleOffset();
+            this.packagesStringOffset = findLocation("/packages/java.lang").getModuleOffset();
+
+            // Node creation is very lazy, se can just make the top-level directories
+            // now without the risk of triggering the building of lots of other nodes.
+            Directory packages = newDirectory("/packages");
+            nodes.put(packages.getName(), packages);
+            Directory modules = newDirectory("/modules");
+            nodes.put(modules.getName(), modules);
+
+            Directory root = newDirectory("/");
+            root.setChildren(Arrays.asList(packages, modules));
+            nodes.put(root.getName(), root);
         }
 
         public static ImageReader open(Path imagePath, ByteOrder byteOrder) throws IOException {
@@ -263,8 +227,8 @@ public final class ImageReader implements AutoCloseable {
 
                 if (openers.isEmpty()) {
                     close();
+                    // TODO: Should this be synchronized by "this" ??
                     nodes.clear();
-                    rootDir = null;
 
                     if (!OPEN_FILES.remove(this.getImagePath(), this)) {
                         throw new IOException("image file not found in open list");
@@ -273,205 +237,169 @@ public final class ImageReader implements AutoCloseable {
             }
         }
 
-        void addOpener(ImageReader reader) {
-            synchronized (OPEN_FILES) {
-                openers.add(reader);
+        /// Returns a node in the JRT filesystem namespace, or null if no resource or
+        /// directory exists.
+        ///
+        /// Node names are absolute, {@code /}-separated path strings, prefixed with
+        /// either {@code "/modules"} or {@code "/packages"}.
+        ///
+        /// This is the only public API by which anything outside this class can access
+        /// Node instances either directly, or by resolving a symbolic link.
+        ///
+        /// Note also that there is no reentrant calling back to this method from within
+        /// the node handling code.
+        synchronized Node findNode(String name) {
+            Node node = nodes.get(name);
+            if (node == null) {
+                node = buildNode(name);
+                if (node != null) {
+                    nodes.put(node.getName(), node);
+                }
+            } else if (!node.isCompleted()) {
+                // Only directories can be incomplete.
+                assert node instanceof Directory : "Invalid incomplete node: " + node;
+                completeDirectory((Directory) node);
             }
+            assert node == null || node.isCompleted() : "Incomplete node: " + node;
+            return node;
         }
 
-        boolean removeOpener(ImageReader reader) {
-            synchronized (OPEN_FILES) {
-                return openers.remove(reader);
-            }
-        }
-
-        // directory management interface
-        Directory getRootDirectory() {
-            return buildRootDirectory();
-        }
-
-        /**
-         * Lazily build a node from a name.
-         */
-        synchronized Node buildNode(String name) {
-            Node n;
+        /// Builds a new, "complete" node based on its absolute name.
+        /// We only get here if the name is not yet present in the nodes map.
+        private Node buildNode(String name) {
+            // Zero-allocation test to reject any unexpected paths early.
             boolean isPackages = name.startsWith("/packages");
             boolean isModules = !isPackages && name.startsWith("/modules");
-
             if (!(isModules || isPackages)) {
                 return null;
             }
-
+            // Will FAIL for non-directory resources, since the image path does not
+            // start with "/modules" (e.g. "/java.base/java/lang/Object.class").
             ImageLocation loc = findLocation(name);
 
-            if (loc != null) { // A sub tree node
-                if (isPackages) {
-                    n = handlePackages(name, loc);
-                } else { // modules sub tree
-                    n = handleModulesSubTree(name, loc);
-                }
-            } else { // Asking for a resource? /modules/java.base/java/lang/Object.class
-                if (isModules) {
-                    n = handleResource(name);
-                } else {
-                    // Possibly ask for /packages/java.lang/java.base
-                    // although /packages/java.base not created
-                    n = handleModuleLink(name);
-                }
+            Node node = null;
+            if (loc != null) {
+                // A subtree node in either /modules/... or /packages/...
+                node = isPackages
+                        ? buildPackageNode(name, loc)
+                        : buildModuleDirectory(name, loc);
+            } else if (isModules) {
+                // We still cannot trust that this path is valid, but if it is,
+                // it must be a resource node in /modules/...
+                node = buildResourceNode(name);
             }
-            return n;
+            return node;
         }
 
-        synchronized Directory buildRootDirectory() {
-            Directory root = rootDir; // volatile read
-            if (root != null) {
-                return root;
-            }
-
-            root = newDirectory(null, "/");
-            root.setIsRootDir();
-
-            // /packages dir
-            packagesDir = newDirectory(root, "/packages");
-            packagesDir.setIsPackagesDir();
-
-            // /modules dir
-            modulesDir = newDirectory(root, "/modules");
-            modulesDir.setIsModulesDir();
-
-            root.setCompleted(true);
-            return rootDir = root;
-        }
-
-        /**
-         * To visit sub tree resources.
-         */
-        interface LocationVisitor {
-            void visit(ImageLocation loc);
-        }
-
-        void visitLocation(ImageLocation loc, LocationVisitor visitor) {
-            byte[] offsets = getResource(loc);
-            ByteBuffer buffer = ByteBuffer.wrap(offsets);
-            buffer.order(getByteOrder());
-            IntBuffer intBuffer = buffer.asIntBuffer();
-            for (int i = 0; i < offsets.length / SIZE_OF_OFFSET; i++) {
-                int offset = intBuffer.get(i);
-                ImageLocation pkgLoc = getLocation(offset);
-                visitor.visit(pkgLoc);
-            }
-        }
-
-        void visitPackageLocation(ImageLocation loc) {
-            // Retrieve package name
-            String pkgName = getBaseExt(loc);
-            // Content is array of offsets in Strings table
-            byte[] stringsOffsets = getResource(loc);
-            ByteBuffer buffer = ByteBuffer.wrap(stringsOffsets);
-            buffer.order(getByteOrder());
-            IntBuffer intBuffer = buffer.asIntBuffer();
-            // For each module, create a link node.
-            for (int i = 0; i < stringsOffsets.length / SIZE_OF_OFFSET; i++) {
-                // skip empty state, useless.
-                intBuffer.get(i);
-                i++;
-                int offset = intBuffer.get(i);
-                String moduleName = getString(offset);
-                Node targetNode = findNode("/modules/" + moduleName);
-                if (targetNode != null) {
-                    String pkgDirName = packagesDir.getName() + "/" + pkgName;
-                    Directory pkgDir = (Directory) nodes.get(pkgDirName);
-                    newLinkNode(pkgDir, pkgDir.getName() + "/" + moduleName, targetNode);
-                }
-            }
-        }
-
-        Node handlePackages(String name, ImageLocation loc) {
-            long size = loc.getUncompressedSize();
-            Node n = null;
-            // Only possibilities are /packages, /packages/package/module
-            if (name.equals("/packages")) {
-                visitLocation(loc, (childloc) -> {
-                    findNode(childloc.getFullName());
-                });
-                packagesDir.setCompleted(true);
-                n = packagesDir;
+        /// Completes a directory by ensuring its child list is populated correctly.
+        private void completeDirectory(Directory dir) {
+            String name = dir.getName();
+            // Since the node exists, we can assert that it's name starts with
+            // either /modules or /packages, making differentiation easy. It also
+            // means that the name is valid and which must yield a location.
+            assert name.startsWith("/modules") || name.startsWith("/packages");
+            ImageLocation loc = findLocation(name);
+            assert loc != null && name.equals(loc.getFullName()) : "Invalid location for name: " + name;
+            // We cannot use 'isXxxSubdirectory()' methods here since we could
+            // be given a top-level directory.
+            if (name.charAt(1) == 'm') {
+                completeModuleDirectory(dir, loc);
             } else {
-                if (size != 0) { // children are offsets to module in StringsTable
-                    String pkgName = getBaseExt(loc);
-                    Directory pkgDir = newDirectory(packagesDir, packagesDir.getName() + "/" + pkgName);
-                    visitPackageLocation(loc);
-                    pkgDir.setCompleted(true);
-                    n = pkgDir;
-                } else { // Link to module
-                    String pkgName = loc.getParent();
-                    String modName = getBaseExt(loc);
-                    Node targetNode = findNode("/modules/" + modName);
-                    if (targetNode != null) {
-                        String pkgDirName = packagesDir.getName() + "/" + pkgName;
-                        Directory pkgDir = (Directory) nodes.get(pkgDirName);
-                        Node linkNode = newLinkNode(pkgDir, pkgDir.getName() + "/" + modName, targetNode);
-                        n = linkNode;
-                    }
-                }
+                completePackageDirectory(dir, loc);
             }
-            return n;
+            assert dir.isCompleted() : "Directory must be complete by now: " + dir;
         }
 
-        // Asking for /packages/package/module although
-        // /packages/<pkg>/ not yet created, need to create it
-        // prior to return the link to module node.
-        Node handleModuleLink(String name) {
-            // eg: unresolved /packages/package/module
-            // Build /packages/package node
-            Node ret = null;
-            String radical = "/packages/";
-            String path = name;
-            if (path.startsWith(radical)) {
-                int start = radical.length();
-                int pkgEnd = path.indexOf('/', start);
-                if (pkgEnd != -1) {
-                    String pkg = path.substring(start, pkgEnd);
-                    String pkgPath = radical + pkg;
-                    Node n = findNode(pkgPath);
-                    // If not found means that this is a symbolic link such as:
-                    // /packages/java.util/java.base/java/util/Vector.class
-                    // and will be done by a retry of the filesystem
-                    for (Node child : n.getChildren()) {
-                        if (child.name.equals(name)) {
-                            ret = child;
-                            break;
-                        }
-                    }
-                }
+        /// Builds either a 2nd level package directory, or a 3rd level symbolic
+        /// link from an {@code ImageLocation}. Possible names are:
+        ///
+        /// * {@code /packages/<package>}: Builds a {@code Directory}.
+        /// * {@code /packages/<package>/<module>}: Builds a {@code LinkNode}.
+        ///
+        /// Called by {@code buildNode()} if a package node is not present in the
+        /// cache. The top-level {@code /packages} directory was already built by
+        /// {@code buildRootDirectory}.
+        private Node buildPackageNode(String name, ImageLocation loc) {
+            assert !name.equals("/packages") : "Cannot build root /packages directory";
+            if (isPackagesSubdirectory(loc)) {
+                return completePackageDirectory(newDirectory(name), loc);
             }
-            return ret;
+            int modStart = name.indexOf('/', "/packages/".length()) + 1;
+            assert modStart > 0 && name.indexOf('/', modStart) == -1 : "Invalid link name: " + name;
+            return newLinkNode(name, "/modules/" + name.substring(modStart));
         }
 
-        Node handleModulesSubTree(String name, ImageLocation loc) {
-            Node n;
-            assert (name.equals(loc.getFullName()));
-            Directory dir = makeDirectories(name);
-            visitLocation(loc, (childloc) -> {
-                String path = childloc.getFullName();
-                if (path.startsWith("/modules")) { // a package
-                    makeDirectories(path);
-                } else { // a resource
-                    makeDirectories(childloc.buildName(true, true, false));
-                    // if we have already created a resource for this name previously, then don't
-                    // recreate it
-                    if (!nodes.containsKey(childloc.getFullName(true))) {
-                        newResource(dir, childloc);
-                    }
+        /// Completes a package directory by setting the list of child nodes.
+        ///
+        /// This is called by {@code buildPackageNode()}, but also for the
+        /// top-level {@code /packages} directory.
+        private Directory completePackageDirectory(Directory dir, ImageLocation loc) {
+            assert dir.getName().equals(loc.getFullName()) : "Mismatched location for directory: " + dir;
+            // The only directories in the /packages namespace are /packages or
+            // /packages/<package>. However, unlike /modules directories, the
+            // location offsets mean different things.
+            List<Node> children;
+            if (dir.getName().equals("/packages")) {
+                // Top-level directory just contains a list of subdirectories.
+                children = createChildNodes(loc, c -> nodes.computeIfAbsent(c.getFullName(), this::newDirectory));
+            } else {
+                // A package directory's content is array of offset PAIRS in the
+                // Strings table, but we only need the 2nd value of each pair.
+                IntBuffer intBuffer = getOffsetBuffer(loc);
+                int offsetCount = intBuffer.capacity();
+                children = new ArrayList<>(offsetCount / 2);
+                // Iterate the 2nd offset in each pair (odd indices).
+                for (int i = 1; i < offsetCount; i += 2) {
+                    String moduleName = getString(intBuffer.get(i));
+                    children.add(nodes.computeIfAbsent(
+                            dir.getName() + "/" + moduleName,
+                            n -> newLinkNode(n, "/modules/" + moduleName)));
+                }
+            }
+            // This only happens once and "completes" the directory.
+            dir.setChildren(children);
+            return dir;
+        }
+
+        /// Builds a modules subdirectory directory from an {@code ImageLocation}.
+        ///
+        /// Called by {@code buildNode()} if a module directory is not present in
+        /// the cache. The top-level {@code /modules} directory was already built by
+        /// {@code buildRootDirectory}.
+        private Node buildModuleDirectory(String name, ImageLocation loc) {
+            assert name.equals(loc.getFullName()) : "Mismatched location for directory: " + name;
+            assert isModulesSubdirectory(loc) : "Invalid modules directory: " + name;
+            return completeModuleDirectory(newDirectory(name), loc);
+        }
+
+        /// Completes a modules directory by setting the list of child nodes.
+        ///
+        /// The given directory can be the top level {@code /modules} directory
+        /// (so it is NOT safe to use {@code isModulesSubdirectory(loc)} here).
+        private Directory completeModuleDirectory(Directory dir, ImageLocation loc) {
+            assert dir.getName().equals(loc.getFullName()) : "Mismatched location for directory: " + dir;
+            List<Node> children = createChildNodes(loc, (childloc) -> {
+                if (isModulesSubdirectory(childloc)) {
+                    return nodes.computeIfAbsent(childloc.getFullName(), this::newDirectory);
+                } else {
+                    // Add the "/modules" prefix to image location paths to get
+                    // Jrt file system names.
+                    String resourceName = childloc.getFullName(true);
+                    return nodes.computeIfAbsent(resourceName, n -> newResource(n, childloc));
                 }
             });
-            dir.setCompleted(true);
-            n = dir;
-            return n;
+            dir.setChildren(children);
+            return dir;
         }
 
-        Node handleResource(String name) {
-            Node n = null;
+        /// Builds a resource node in the {@code /modules} hierarchy.
+        ///
+        /// Called by {@code buildNode()} if there was no entry for the given
+        /// name in the cache. Unlike {@code buildPackageNode()} and
+        /// {@code buildModuleDirectory()}, there is no ImageLocation (yet) and
+        /// the given name cannot be trusted to belong to any resource (or even
+        /// be a valid resource name).
+        private Node buildResourceNode(String name) {
             if (!name.startsWith("/modules/")) {
                 return null;
             }
@@ -480,48 +408,80 @@ public final class ImageReader implements AutoCloseable {
             if (moduleEndIndex == -1) {
                 return null;
             }
+            // Tests that the implied module name actually exists before during
+            // a full lookup for the location.
+            // TODO: I don't think this is strictly necessary (maybe an assert)?
             ImageLocation moduleLoc = findLocation(name.substring(0, moduleEndIndex));
             if (moduleLoc == null || moduleLoc.getModuleOffset() == 0) {
                 return null;
             }
-
-            String locationPath = name.substring("/modules".length());
-            ImageLocation resourceLoc = findLocation(locationPath);
-            if (resourceLoc != null) {
-                Directory dir = makeDirectories(resourceLoc.buildName(true, true, false));
-                Resource res = newResource(dir, resourceLoc);
-                n = res;
+            // Resource paths in the image are NOT prefixed with /modules.
+            ImageLocation resourceLoc = findLocation(name.substring("/modules".length()));
+            if (resourceLoc == null) {
+                return null;
             }
-            return n;
+            return newResource(name, resourceLoc);
         }
 
-        String getBaseExt(ImageLocation loc) {
-            String base = loc.getBase();
-            String ext = loc.getExtension();
-            if (ext != null && !ext.isEmpty()) {
-                base = base + "." + ext;
+        /// Creates the list of child nodes for a {@code Directory} based on a
+        /// given node creation function.
+        ///
+        /// Note: This cannot be used for package subdirectories as they have
+        /// child offsets stored differently to other directories.
+        private List<Node> createChildNodes(ImageLocation loc, Function<ImageLocation, Node> newChildFn) {
+            IntBuffer offsets = getOffsetBuffer(loc);
+            int childCount = offsets.capacity();
+            List<Node> children = new ArrayList<>(childCount);
+            for (int i = 0; i < childCount; i++) {
+                children.add(newChildFn.apply(getLocation(offsets.get(i))));
             }
-            return base;
+            return children;
         }
 
-        synchronized Node findNode(String name) {
-            buildRootDirectory();
-            Node n = nodes.get(name);
-            if (n == null || !n.isCompleted()) {
-                n = buildNode(name);
-            }
-            return n;
+        /// Helper method to extract the integer offset buffer from a directory
+        /// location.
+        private IntBuffer getOffsetBuffer(ImageLocation dir) {
+            assert isDirectory(dir) : "Not a directory: " + dir.getFullName();
+            byte[] offsets = getResource(dir);
+            ByteBuffer buffer = ByteBuffer.wrap(offsets);
+            buffer.order(getByteOrder());
+            return buffer.asIntBuffer();
         }
 
-        /**
-         * Returns the file attributes of the image file.
-         */
-        BasicFileAttributes imageFileAttributes() {
+        /// Determines if an image location is a directory in the {@code /modules}
+        /// namespace (if so, the location name is the Jrt filesystem name).
+        ///
+        /// In the image namespace, everything under {@code /modules/}  is a
+        /// directory, and has the same value for {@code getModule()}.
+        private boolean isModulesSubdirectory(ImageLocation loc) {
+            return loc.getModuleOffset() == modulesStringOffset;
+        }
+
+        /// Determines if an image location is a directory in the {@code /packages}
+        /// namespace (if so, the location name is the Jrt filesystem name).
+        ///
+        /// For locations under {@code /packages/} you have both directories and
+        /// symbolic links. Directories are only at the first level, with symbolic
+        /// links under them (and symbolic link entries have no content).
+        private boolean isPackagesSubdirectory(ImageLocation loc) {
+            return loc.getModuleOffset() == packagesStringOffset
+                    && loc.getUncompressedSize() > 0;
+        }
+
+        /// Determines if an image location represents a directory of some kind.
+        /// Directory locations store child offsets in their content.
+        private boolean isDirectory(ImageLocation loc) {
+            return isModulesSubdirectory(loc) || isPackagesSubdirectory(loc)
+                    || loc.getFullName().equals("/modules") || loc.getFullName().equals("/packages");
+        }
+
+        /// Returns the file attributes of the image file. Currently, all nodes
+        /// share the same attributes.
+        private BasicFileAttributes imageFileAttributes() {
             BasicFileAttributes attrs = imageFileAttributes;
             if (attrs == null) {
                 try {
-                    Path file = getImagePath();
-                    attrs = Files.readAttributes(file, BasicFileAttributes.class);
+                    attrs = Files.readAttributes(getImagePath(), BasicFileAttributes.class);
                 } catch (IOException ioe) {
                     throw new UncheckedIOException(ioe);
                 }
@@ -530,109 +490,58 @@ public final class ImageReader implements AutoCloseable {
             return attrs;
         }
 
-        Directory newDirectory(Directory parent, String name) {
-            Directory dir = Directory.create(parent, name, imageFileAttributes());
-            nodes.put(dir.getName(), dir);
-            return dir;
+        /// Creates an "incomplete" directory node with no child nodes set.
+        /// Directories need to be "completed" before they are returned by
+        /// {@code findNode()}.
+        private Directory newDirectory(String name) {
+            return new Directory(name, imageFileAttributes());
         }
 
-        Resource newResource(Directory parent, ImageLocation loc) {
-            Resource res = Resource.create(parent, loc, imageFileAttributes());
-            nodes.put(res.getName(), res);
-            return res;
+        /// Creates a new resource from an image location. This is the only case
+        /// where the image location name does not match the requested node name.
+        /// In image files, resource locations are NOT prefixed by {@code /modules}.
+        private Resource newResource(String name, ImageLocation loc) {
+            assert name.equals(loc.getFullName(true)) : "Mismatched location for resource: " + name;
+            return new Resource(name, loc, imageFileAttributes());
         }
 
-        LinkNode newLinkNode(Directory dir, String name, Node link) {
-            LinkNode linkNode = LinkNode.create(dir, name, link);
-            nodes.put(linkNode.getName(), linkNode);
-            return linkNode;
+        /// Creates a new link node pointing at the given target name.
+        ///
+        /// Note that target node is resolved each time {@code resolve()} is
+        /// called, so if a link node is retained after its reader is closed,
+        /// it will begin to fail.
+        private LinkNode newLinkNode(String name, String targetName) {
+            return new LinkNode(name, () -> findNode(targetName), imageFileAttributes());
         }
 
-        Directory makeDirectories(String parent) {
-            Directory last = rootDir;
-            for (int offset = parent.indexOf('/', 1);
-                    offset != -1;
-                    offset = parent.indexOf('/', offset + 1)) {
-                String dir = parent.substring(0, offset);
-                last = makeDirectory(dir, last);
-            }
-            return makeDirectory(parent, last);
-
-        }
-
-        Directory makeDirectory(String dir, Directory last) {
-            Directory nextDir = (Directory) nodes.get(dir);
-            if (nextDir == null) {
-                nextDir = newDirectory(last, dir);
-            }
-            return nextDir;
-        }
-
-        byte[] getResource(Node node) throws IOException {
+        /// Returns the content of a resource node.
+        private byte[] getResource(Node node) throws IOException {
+            // We could have been given a non-resource node here.
+            // TODO: Would it be more robust to have this method accept Resource
+            //  and have the caller verify by type (getLocation() fails anyway)?
             if (node.isResource()) {
                 return super.getResource(node.getLocation());
             }
             throw new IOException("Not a resource: " + node);
         }
-
-        byte[] getResource(Resource rs) throws IOException {
-            return super.getResource(rs.getLocation());
-        }
     }
 
-    // jimage file does not store directory structure. We build nodes
-    // using the "path" strings found in the jimage file.
-    // Node can be a directory or a resource
     public abstract static class Node {
-        private static final int ROOT_DIR = 0b0000_0000_0000_0001;
-        private static final int PACKAGES_DIR = 0b0000_0000_0000_0010;
-        private static final int MODULES_DIR = 0b0000_0000_0000_0100;
-
-        private int flags;
         private final String name;
         private final BasicFileAttributes fileAttrs;
-        private boolean completed;
 
+        // TODO: Only visible for use by ExplodedImage.
         protected Node(String name, BasicFileAttributes fileAttrs) {
             this.name = Objects.requireNonNull(name);
             this.fileAttrs = Objects.requireNonNull(fileAttrs);
         }
 
         /**
-         * A node is completed when all its direct children have been built.
-         *
-         * @return
+         * A node is completed when all its direct children have been built. As
+         * such, non-directory nodes are always complete.
          */
-        public boolean isCompleted() {
-            return completed;
-        }
-
-        public void setCompleted(boolean completed) {
-            this.completed = completed;
-        }
-
-        public final void setIsRootDir() {
-            flags |= ROOT_DIR;
-        }
-
-        public final boolean isRootDir() {
-            return (flags & ROOT_DIR) != 0;
-        }
-
-        public final void setIsPackagesDir() {
-            flags |= PACKAGES_DIR;
-        }
-
-        public final boolean isPackagesDir() {
-            return (flags & PACKAGES_DIR) != 0;
-        }
-
-        public final void setIsModulesDir() {
-            flags |= MODULES_DIR;
-        }
-
-        public final boolean isModulesDir() {
-            return (flags & MODULES_DIR) != 0;
+        boolean isCompleted() {
+            return true;
         }
 
         public final String getName() {
@@ -661,7 +570,7 @@ public final class ImageReader implements AutoCloseable {
             return false;
         }
 
-        public List<Node> getChildren() {
+        public Stream<String> getChildNames() {
             throw new IllegalArgumentException("not a directory: " + getNameString());
         }
 
@@ -683,10 +592,6 @@ public final class ImageReader implements AutoCloseable {
 
         public String extension() {
             return null;
-        }
-
-        public long contentOffset() {
-            return 0L;
         }
 
         public final FileTime creationTime() {
@@ -729,21 +634,40 @@ public final class ImageReader implements AutoCloseable {
         }
     }
 
-    // directory node - directory has full path name without '/' at end.
-    static final class Directory extends Node {
-        private final List<Node> children;
+    /// Directory node (referenced from a full path, without a trailing '/').
+    ///
+    /// Directory nodes have two distinct states:
+    /// * Incomplete: The child list has not been set.
+    /// * Complete: The child list has been set.
+    ///
+    /// When a directory node is returned by {@code findNode()} it is ensured to
+    /// be complete, but this DOES NOT mean that its child nodes are complete.
+    ///
+    /// The users of {@code ImageReader} are expected to account for this and
+    /// avoid directly traversing the node hierarchy. This isn't as awkward as
+    /// it seems however, since {@code JrtFileSystem} (the primary user of this
+    /// API) always represents node locations via {@code JrtPath}, and so will
+    /// always lookup nodes directly by name rather than traversing the node
+    /// hierarchy.
+    ///
+    /// If it was ever a requirement that {@code getChildren()} would return
+    /// complete nodes, that could be easily achieved via a memoized child list
+    /// supplier, but this would likely come at the cost of performance.
+    ///
+    /// The exact rule(s) by which the set of child nodes is determined is
+    /// inferred in `buildNode()` from the structure of the requested path and
+    /// the underlying `ImageLocation` data.
+    private static final class Directory extends Node {
+        // Monotonic reference, will be set to the unmodifiable child list exactly once.
+        private List<Node> children = null;
 
         private Directory(String name, BasicFileAttributes fileAttrs) {
             super(name, fileAttrs);
-            children = new ArrayList<>();
         }
 
-        static Directory create(Directory parent, String name, BasicFileAttributes fileAttrs) {
-            Directory d = new Directory(name, fileAttrs);
-            if (parent != null) {
-                parent.addChild(d);
-            }
-            return d;
+        @Override
+        boolean isCompleted() {
+            return children != null;
         }
 
         @Override
@@ -752,46 +676,35 @@ public final class ImageReader implements AutoCloseable {
         }
 
         @Override
-        public List<Node> getChildren() {
-            return Collections.unmodifiableList(children);
-        }
-
-        void addChild(Node node) {
-            assert !children.contains(node) : "Child " + node + " already added";
-            children.add(node);
-        }
-
-        public void walk(Consumer<? super Node> consumer) {
-            consumer.accept(this);
-            for (Node child : children) {
-                if (child.isDirectory()) {
-                    ((Directory)child).walk(consumer);
-                } else {
-                    consumer.accept(child);
-                }
+        public Stream<String> getChildNames() {
+            if (children != null) {
+                return children.stream().map(Node::getName);
             }
+            throw new IllegalStateException("Cannot get child nodes of an incomplete directory: " + getName());
+        }
+
+        private void setChildren(List<Node> children) {
+            assert this.children == null : this + ": Cannot set child nodes twice!";
+            this.children = Collections.unmodifiableList(children);
         }
     }
 
-    // "resource" is .class or any other resource (compressed/uncompressed) in a jimage.
-    // full path of the resource is the "name" of the resource.
-    static class Resource extends Node {
+    /// Resource node (a ".class" or any other data resource in jimage).
+    ///
+    /// Resources are leaf nodes referencing an underlying image location. They
+    /// are lightweight, and do not cache their contents.
+    ///
+    /// Unlike directories (where the node name matches the jimage path for the
+    /// corresponding {@code ImageLocation}), resource node names are NOT the
+    /// same as the corresponding jimage path. The difference is simply that
+    /// jimage paths are not prefixed with "/modules", and just start with
+    /// their module name (e.g. "/java.base/java/lang/Object.class").
+    private static class Resource extends Node {
         private final ImageLocation loc;
 
-        private Resource(ImageLocation loc, BasicFileAttributes fileAttrs) {
-            super(loc.getFullName(true), fileAttrs);
+        private Resource(String name, ImageLocation loc, BasicFileAttributes fileAttrs) {
+            super(name, fileAttrs);
             this.loc = loc;
-        }
-
-        static Resource create(Directory parent, ImageLocation loc, BasicFileAttributes fileAttrs) {
-            Resource rs = new Resource(loc, fileAttrs);
-            parent.addChild(rs);
-            return rs;
-        }
-
-        @Override
-        public boolean isCompleted() {
-            return true;
         }
 
         @Override
@@ -818,36 +731,24 @@ public final class ImageReader implements AutoCloseable {
         public String extension() {
             return loc.getExtension();
         }
-
-        @Override
-        public long contentOffset() {
-            return loc.getContentOffset();
-        }
     }
 
-    // represents a soft link to another Node
-    static class LinkNode extends Node {
-        private final Node link;
+    /// Link node (a symbolic link to a top-level modules directory).
+    ///
+    /// Link nodes resolve their target by invoking a given supplier, and do not
+    /// cache the result. Since nodes are cached by the {@code ImageReader}, this
+    /// means that only the first call to {@code resolveLink()} can do any work.
+    private static class LinkNode extends Node {
+        private final Supplier<Node> link;
 
-        private LinkNode(String name, Node link) {
-            super(name, link.getFileAttributes());
+        private LinkNode(String name, Supplier<Node> link, BasicFileAttributes fileAttrs) {
+            super(name, fileAttrs);
             this.link = link;
-        }
-
-        static LinkNode create(Directory parent, String name, Node link) {
-            LinkNode ln = new LinkNode(name, link);
-            parent.addChild(ln);
-            return ln;
-        }
-
-        @Override
-        public boolean isCompleted() {
-            return true;
         }
 
         @Override
         public Node resolveLink(boolean recursive) {
-            return (recursive && link instanceof LinkNode) ? ((LinkNode)link).resolveLink(true) : link;
+            return link.get();
         }
 
         @Override

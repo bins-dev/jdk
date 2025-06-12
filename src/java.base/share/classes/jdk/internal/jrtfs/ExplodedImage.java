@@ -119,7 +119,7 @@ class ExplodedImage extends SystemImage {
         }
 
         @Override
-        public List<Node> getChildren() {
+        public Stream<String> getChildNames() {
             if (!isDirectory())
                 throw new IllegalArgumentException("not a directory: " + getNameString());
             if (children == null) {
@@ -138,7 +138,7 @@ class ExplodedImage extends SystemImage {
                 }
                 children = list;
             }
-            return children;
+            return children.stream().map(Node::getName);
         }
 
         @Override
