@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -47,6 +47,32 @@ import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /**
+ * An adapter for {@link BasicImageReader} to present jimage resources in a
+ * file system friendly way. jimage entries (resources, module and package
+ * information) are mapped into a unified hierarchy of named nodes, which serve
+ * as the underlying structure for the JrtFileSystem implementation and other
+ * utilities.
+ *
+ * <p>Because this class is adapting underlying jimage semantics, there is no
+ * need for it to export all the features and behaviour of that class (it is not
+ * a conceptual subtype of {@code BasicImageReader}). {@code ImageReader}'s job
+ * is to support whatever is needed by internal tools which want a file system
+ * like view of jimage resources.
+ *
+ * <p>Entries in jimage are exported as one of three {@link Node} types;
+ * resource nodes, directory nodes and link nodes.
+ *
+ * <p>When remapping jimage entries, jimage location names (e.g. {@code
+ * "/java.base/java/lang/Integer.class"}) are prefixed with {@code "/modules"}
+ * to form the names of resource nodes. This aligns with the naming of module
+ * entries in jimage (e.g. "/modules/java.base/java/lang"), which appear as
+ * directory nodes in {@code ImageReader}.
+ *
+ * <p>Package entries (e.g. {@code "/packages/java.lang/java.base"} appear as
+ * link nodes, pointing back to the root directory of the associated module in
+ * which the package exists (e.g. {@code "/modules/java.base"}). This provides
+ * a mechanism compatible with the notion of symbolic links in a file system.
+ *
  * @implNote This class needs to maintain JDK 8 source compatibility.
  *
  * It is used internally in the JDK to implement jimage/jrtfs access,
@@ -62,6 +88,14 @@ public final class ImageReader implements AutoCloseable {
         this.reader = reader;
     }
 
+    /**
+     * Opens an image reader for a jimage file at the specified path, using the
+     * given byte order.
+     *
+     * <p>Almost all callers should use {@link #open(Path)} to obtain a reader
+     * with the platform native byte ordering. Using a non-native ordering is
+     * extremely unusual.
+     */
     public static ImageReader open(Path imagePath, ByteOrder byteOrder) throws IOException {
         Objects.requireNonNull(imagePath);
         Objects.requireNonNull(byteOrder);
@@ -69,6 +103,13 @@ public final class ImageReader implements AutoCloseable {
         return SharedImageReader.open(imagePath, byteOrder);
     }
 
+    /**
+     * Opens an image reader for a jimage file at the specified path, using the
+     * platform native byte order.
+     *
+     * <p>This is the expected was to open an {@code ImageReader}, and it should
+     * be rare for anything other than the native byte order to be needed.
+     */
     public static ImageReader open(Path imagePath) throws IOException {
         return open(imagePath, ByteOrder.nativeOrder());
     }
@@ -94,63 +135,51 @@ public final class ImageReader implements AutoCloseable {
         }
     }
 
-    // TODO: Called by SystemImage (now completely pointless).
-    // directory management interface
-    public Directory getRootDirectory() throws IOException {
-        ensureOpen();
-        return (Directory) findNode("/");
-    }
-
-    // TODO: Called by SystemImage and SystemModuleFinders.
+    /**
+     * Finds the node for the given JRT file system name.
+     *
+     * @param name a JRT file system name (path) of the form
+     * {@code "/modules/<module>/...} or {@code "/packages/<package>/...}.
+     * @return a node representing a resource, directory or symbolic link.
+     */
     public Node findNode(String name) throws IOException {
         ensureOpen();
         return reader.findNode(name);
     }
 
-    // TODO: Called by SystemImage for JrtFileSystem.
+    /**
+     * Returns the content of a resource node.
+     *
+     * @throws IOException if the content cannot be returned (including if the
+     * given node is not a resource node).
+     */
     public byte[] getResource(Node node) throws IOException {
         ensureOpen();
         return reader.getResource(node);
     }
 
-    // TODO: Called once from SystemModuleReader::release().
+    /**
+     * Releases a (possibly cached) {@link ByteBuffer} obtained via
+     * {@link #getResourceBuffer(Node)}.
+     *
+     * <p>Note that no testing is performed to check whether the buffer about
+     * to be released actually came from a call to {@code getResourceBuffer()}.
+     */
     public static void releaseByteBuffer(ByteBuffer buffer) {
         BasicImageReader.releaseByteBuffer(buffer);
     }
 
-    // TODO: Avoid leaking ImageLocation into callers (only 3) so we can
-    //  encapsulate better for exploded image etc.
-    public ImageLocation findLocation(String mn, String rn) {
+    /**
+     * Returns the content of a resource node in a possibly cached byte buffer.
+     * Callers of this method must call {@link #releaseByteBuffer(ByteBuffer)}
+     * when they are finished with it.
+     */
+    public ByteBuffer getResourceBuffer(Node node) {
         requireOpen();
-        return reader.findLocation(mn, rn);
-    }
-
-    public boolean verifyLocation(String mn, String rn) {
-        requireOpen();
-        return reader.verifyLocation(mn, rn);
-    }
-
-    // TODO: Only called once when processing module info.
-    //  Maybe simplify to use findNode("/modules").getChildren() ?
-    public String[] getModuleNames() {
-        requireOpen();
-        int off = "/modules/".length();
-        return reader.findNode("/modules")
-                .getChildNames()
-                .map(s -> s.substring(off))
-                .toArray(String[]::new);
-    }
-
-    // TODO: Called once by JavaURuntimeURLConnection ...
-    public byte[] getResource(ImageLocation loc) {
-        requireOpen();
-        return reader.getResource(loc);
-    }
-
-    // TODO: Called twice in SystemModuleFinders.
-    public ByteBuffer getResourceBuffer(ImageLocation loc) {
-        requireOpen();
-        return reader.getResourceBuffer(loc);
+        if (!node.isResource()) {
+            throw new IllegalStateException("Not a resource node: " + node);
+        }
+        return reader.getResourceBuffer(node.getLocation());
     }
 
     private static final class SharedImageReader extends BasicImageReader {
@@ -165,8 +194,6 @@ public final class ImageReader implements AutoCloseable {
         // Initialized lazily, see {@link #imageFileAttributes()}.
         private BasicFileAttributes imageFileAttributes;
 
-        // TODO: Add JavaDoc explaining Image vs System paths.
-        // Map from absolute "system path" to cached node instances.
         // This is guarded by via synchronization of 'this' instance.
         private final HashMap<String, Node> nodes;
         // Used to quickly test ImageLocation without needing string comparisons.
@@ -517,8 +544,6 @@ public final class ImageReader implements AutoCloseable {
         /// Returns the content of a resource node.
         private byte[] getResource(Node node) throws IOException {
             // We could have been given a non-resource node here.
-            // TODO: Would it be more robust to have this method accept Resource
-            //  and have the caller verify by type (getLocation() fails anyway)?
             if (node.isResource()) {
                 return super.getResource(node.getLocation());
             }
@@ -530,16 +555,14 @@ public final class ImageReader implements AutoCloseable {
         private final String name;
         private final BasicFileAttributes fileAttrs;
 
-        // TODO: Only visible for use by ExplodedImage.
+        // Only visible for use by ExplodedImage.
         protected Node(String name, BasicFileAttributes fileAttrs) {
             this.name = Objects.requireNonNull(name);
             this.fileAttrs = Objects.requireNonNull(fileAttrs);
         }
 
-        /**
-         * A node is completed when all its direct children have been built. As
-         * such, non-directory nodes are always complete.
-         */
+        // A node is completed when all its direct children have been built. As
+        // such, non-directory nodes are always complete.
         boolean isCompleted() {
             return true;
         }
@@ -640,23 +663,18 @@ public final class ImageReader implements AutoCloseable {
     /// * Incomplete: The child list has not been set.
     /// * Complete: The child list has been set.
     ///
-    /// When a directory node is returned by {@code findNode()} it is ensured to
-    /// be complete, but this DOES NOT mean that its child nodes are complete.
+    /// When a directory node is returned by `findNode()` it is always complete,
+    /// but this DOES NOT mean that its child nodes are complete yet.
     ///
-    /// The users of {@code ImageReader} are expected to account for this and
-    /// avoid directly traversing the node hierarchy. This isn't as awkward as
-    /// it seems however, since {@code JrtFileSystem} (the primary user of this
-    /// API) always represents node locations via {@code JrtPath}, and so will
-    /// always lookup nodes directly by name rather than traversing the node
-    /// hierarchy.
+    /// To avoid users being able to access incomplete child nodes, the
+    /// {@link Node} API offers only a way to obtain child node names, forcing
+    /// callers to invoke {@link ImageReader#findNode(String)} if they need to
+    /// access the child node itself.
     ///
-    /// If it was ever a requirement that {@code getChildren()} would return
-    /// complete nodes, that could be easily achieved via a memoized child list
-    /// supplier, but this would likely come at the cost of performance.
-    ///
-    /// The exact rule(s) by which the set of child nodes is determined is
-    /// inferred in `buildNode()` from the structure of the requested path and
-    /// the underlying `ImageLocation` data.
+    /// This approach allows directories to be implemented lazily with respect
+    /// to child nodes, while retaining efficiency when child nodes are accessed
+    /// (since the incomplete node will be created and placed in the node cache
+    /// as the parent is accessed).
     private static final class Directory extends Node {
         // Monotonic reference, will be set to the unmodifiable child list exactly once.
         private List<Node> children = null;
@@ -695,10 +713,10 @@ public final class ImageReader implements AutoCloseable {
     /// are lightweight, and do not cache their contents.
     ///
     /// Unlike directories (where the node name matches the jimage path for the
-    /// corresponding {@code ImageLocation}), resource node names are NOT the
-    /// same as the corresponding jimage path. The difference is simply that
-    /// jimage paths are not prefixed with "/modules", and just start with
-    /// their module name (e.g. "/java.base/java/lang/Object.class").
+    /// corresponding `ImageLocation`), resource node names are NOT the same as
+    /// the corresponding jimage path. The difference is that node names for
+    /// resources are prefixed with "/modules", which is missing from the
+    /// equivalent jimage path.
     private static class Resource extends Node {
         private final ImageLocation loc;
 
@@ -736,8 +754,9 @@ public final class ImageReader implements AutoCloseable {
     /// Link node (a symbolic link to a top-level modules directory).
     ///
     /// Link nodes resolve their target by invoking a given supplier, and do not
-    /// cache the result. Since nodes are cached by the {@code ImageReader}, this
-    /// means that only the first call to {@code resolveLink()} can do any work.
+    /// cache the result. Since nodes are cached by the `ImageReader`, this
+    /// means that only the first call to `resolveLink()` could do any
+    /// significant work.
     private static class LinkNode extends Node {
         private final Supplier<Node> link;
 
