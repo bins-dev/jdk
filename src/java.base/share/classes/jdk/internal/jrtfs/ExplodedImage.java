@@ -121,7 +121,7 @@ class ExplodedImage extends SystemImage {
         @Override
         public Stream<String> getChildNames() {
             if (!isDirectory())
-                throw new IllegalArgumentException("not a directory: " + getNameString());
+                throw new IllegalArgumentException("not a directory: " + getName());
             if (children == null) {
                 List<Node> list = new ArrayList<>();
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(path)) {

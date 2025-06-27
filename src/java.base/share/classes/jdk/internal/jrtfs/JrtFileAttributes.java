@@ -49,7 +49,7 @@ final class JrtFileAttributes  implements BasicFileAttributes {
     //-------- basic attributes --------
     @Override
     public FileTime creationTime() {
-        return node.creationTime();
+        return node.getFileAttributes().creationTime();
     }
 
     @Override
@@ -69,12 +69,12 @@ final class JrtFileAttributes  implements BasicFileAttributes {
 
     @Override
     public FileTime lastAccessTime() {
-        return node.lastAccessTime();
+        return node.getFileAttributes().lastAccessTime();
     }
 
     @Override
     public FileTime lastModifiedTime() {
-        return node.lastModifiedTime();
+        return node.getFileAttributes().lastModifiedTime();
     }
 
     @Override

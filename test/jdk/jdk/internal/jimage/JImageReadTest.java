@@ -25,7 +25,7 @@
  * @test
  * @summary Unit test for libjimage JIMAGE_Open/Read/Close
  * @modules java.base/jdk.internal.jimage
- * @run testng JImageReadTest
+ * @run testng/othervm JImageReadTest
  */
 
 import java.io.File;
@@ -339,7 +339,7 @@ public class JImageReadTest {
         // Will be opened with native byte order.
         try (ImageReader nativeReader = ImageReader.open(imageFile)) {
             // Just ensure something works as expected.
-            Assert.assertNotNull(nativeReader.getRootDirectory());
+            Assert.assertNotNull(nativeReader.findNode("/"));
         } catch (IOException expected) {
             Assert.fail("Reader should be openable with native byte order.");
         }
