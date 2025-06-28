@@ -41,8 +41,8 @@ public class Basic {
     @DataProvider(name = "urls")
     public Object[][] urls() {
         Object[][] data = {
-                {"jrt:/java.base/java/lang/Object.class", true},
-                {"jrt:/java.desktop/java/lang/Object.class", false},
+            { "jrt:/java.base/java/lang/Object.class",    true },
+            { "jrt:/java.desktop/java/lang/Object.class", false },
         };
         return data;
     }

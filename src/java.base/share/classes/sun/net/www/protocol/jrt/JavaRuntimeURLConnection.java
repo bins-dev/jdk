@@ -70,7 +70,7 @@ public class JavaRuntimeURLConnection extends URLConnection {
                 this.name = null;
             } else {
                 this.module = path.substring(1, pos);
-                this.name = ParseUtil.decode(path.substring(pos + 1));
+                this.name = ParseUtil.decode(path.substring(pos+1));
             }
         }
     }
