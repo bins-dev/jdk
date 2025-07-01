@@ -552,7 +552,7 @@ public final class ImageReader implements AutoCloseable {
         }
 
         /**
-         * Returns the JRY file system compatible name of this node (e.g.
+         * Returns the JRT file system compatible name of this node (e.g.
          * {@code "/modules/java.base/java/lang/Object.class"} or {@code
          * "/packages/java.lang"}).
          */
