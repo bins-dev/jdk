@@ -27,6 +27,8 @@ import jdk.test.lib.compiler.InMemoryJavaCompiler;
 import jdk.test.lib.util.JarBuilder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.opentest4j.TestSkippedException;
 import tests.Helper;
 import tests.JImageGenerator;
@@ -74,23 +76,33 @@ public class ImageReaderTest {
                     "com.bar.Two"));
     private final Path image = buildJImage(IMAGE_ENTRIES);
 
-    @Test
-    public void testModuleDirectories() throws IOException {
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "/",
+            "/modules",
+            "/modules/modfoo",
+            "/modules/modbar",
+            "/modules/modfoo/com",
+            "/modules/modfoo/com/foo",
+            "/modules/modfoo/com/foo/bar"})
+    public void testModuleDirectories_expected(String name) throws IOException {
         try (ImageReader reader = ImageReader.open(image)) {
-            // Basic directory expectations.
-            assertDir(reader, "/");
-            assertDir(reader, "/modules");
-            assertDir(reader, "/modules/modfoo");
-            assertDir(reader, "/modules/modbar");
-            assertDir(reader, "/modules/modfoo/com");
-            assertDir(reader, "/modules/modfoo/com/foo");
-            assertDir(reader, "/modules/modfoo/com/foo/bar");
+            assertDir(reader, name);
+        }
+    }
 
-            assertAbsent(reader, "/modules/");
-            assertAbsent(reader, "/modules/unknown");
-            assertAbsent(reader, "/modules/modbar/");
-            assertAbsent(reader, "/modules/modbar//com");
-            assertAbsent(reader, "/modules/modbar/com/");
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "",
+            "//",
+            "/modules/",
+            "/modules/unknown",
+            "/modules/modbar/",
+            "/modules/modfoo//com",
+            "/modules/modfoo/com/"})
+    public void testModuleNodes_absent(String name) throws IOException {
+        try (ImageReader reader = ImageReader.open(image)) {
+            assertAbsent(reader, name);
         }
     }
 

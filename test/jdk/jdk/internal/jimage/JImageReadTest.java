@@ -25,7 +25,7 @@
  * @test
  * @summary Unit test for libjimage JIMAGE_Open/Read/Close
  * @modules java.base/jdk.internal.jimage
- * @run testng/othervm JImageReadTest
+ * @run testng JImageReadTest
  */
 
 import java.io.File;
