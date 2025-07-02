@@ -204,11 +204,11 @@ public final class ImageReader implements AutoCloseable {
             // TODO (review note): Given there are ~30,000 nodes in the image, is setting an initial capacity a good idea?
             this.nodes = new HashMap<>();
             // TODO (review note): These should exist under all circumstances, but there's
-            //  probably a more robust way of getting it these offsets.
+            //  probably a more robust way of getting at these offsets.
             this.modulesStringOffset = findLocation("/modules/java.base").getModuleOffset();
             this.packagesStringOffset = findLocation("/packages/java.lang").getModuleOffset();
 
-            // Node creation is very lazy, se can just make the top-level directories
+            // Node creation is very lazy, so we can just make the top-level directories
             // now without the risk of triggering the building of lots of other nodes.
             Directory packages = newDirectory(PACKAGES_ROOT);
             nodes.put(packages.getName(), packages);
@@ -540,8 +540,8 @@ public final class ImageReader implements AutoCloseable {
             this.fileAttrs = Objects.requireNonNull(fileAttrs);
         }
 
-        // A node is completed when all its direct children have been built. As
-        // such, non-directory nodes are always complete.
+        // A node is completed when all its direct children have been built.
+        // As such, non-directory nodes are always complete.
         boolean isCompleted() {
             return true;
         }
