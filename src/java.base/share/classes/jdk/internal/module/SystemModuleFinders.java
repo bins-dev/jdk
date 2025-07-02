@@ -256,14 +256,14 @@ public final class SystemModuleFinders {
         // System reader is a singleton and should not be closed by callers.
         ImageReader reader = SystemImage.reader();
         try {
-            return reader.findNode("/modules").getChildNames().map(mn -> loadModuleAttributes(reader, mn));
+            return reader.findNode("/modules").getChildNames().map(mn -> readModuleAttributes(reader, mn));
         } catch (IOException e) {
             throw new Error("Error reading root /modules entry", e);
         }
     }
 
-    // The nodes we are processing must exist (every module must have a module-info.class).
-    private static ModuleInfo.Attributes loadModuleAttributes(ImageReader reader, String moduleName) {
+    // Every module is required to have a valid module-info.class.
+    private static ModuleInfo.Attributes readModuleAttributes(ImageReader reader, String moduleName) {
         Exception err = null;
         try {
             ImageReader.Node node = reader.findNode(moduleName + "/module-info.class");
@@ -452,23 +452,22 @@ public final class SystemModuleFinders {
 
         /**
          * Returns the node for the given resource if found. If the name references
-         * a non-resource node, then an {@link Optional#empty() empty optional} is
-         * returned even if a non-resource node exists with the given name.
+         * a non-resource node, then {@code null} is returned.
          */
-        private Optional<ImageReader.Node> findResourceNode(ImageReader reader, String name) throws IOException {
+        private ImageReader.Node findResourceNode(ImageReader reader, String name) throws IOException {
             Objects.requireNonNull(name);
             if (closed) {
                 throw new IOException("ModuleReader is closed");
             }
             String nodeName = "/modules/" + module + "/" + name;
             ImageReader.Node node = reader.findNode(nodeName);
-            return node != null && node.isResource() ? Optional.of(node) : Optional.empty();
+            return node != null && node.isResource() ? node : null;
         }
 
         @Override
         public Optional<ByteBuffer> read(String name) throws IOException {
             ImageReader reader = SystemImage.reader();
-            return findResourceNode(reader, name).map(reader::getResourceBuffer);
+            return Optional.ofNullable(findResourceNode(reader, name)).map(reader::getResourceBuffer);
         }
 
         @Override
